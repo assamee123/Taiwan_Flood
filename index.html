@@ -7,15 +7,16 @@
 <link href="https://cdn.jsdelivr.net/npm/cesium@1.122.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>
   html, body, #map { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; }
-  #ui { position: absolute; top: 10px; left: 10px; background: rgba(20,30,40,.85); color: #eee; padding: 12px 14px;
-        border-radius: 8px; width: 290px; font-size: 13px; }
+  #ui { position: absolute; top: 10px; left: 10px; background: rgba(20,30,40,.88); color: #eee; padding: 12px 14px;
+        border-radius: 8px; width: 300px; font-size: 13px; max-height: 92vh; overflow: auto; }
   #ui h3 { margin: 0 0 8px; font-size: 15px; }
-  #ui label { display: block; margin-top: 8px; }
+  #ui label { display: block; margin-top: 7px; }
   #ui input[type=range] { width: 100%; }
   #ui input[type=number] { width: 70px; }
   #ui button { margin: 8px 4px 0 0; padding: 4px 10px; }
-  #lvl { font-weight: bold; color: #7fd4ff; }
+  .val { font-weight: bold; color: #7fd4ff; }
   small { color: #aab; }
+  .grp { border-top: 1px solid #456; margin-top: 8px; padding-top: 4px; }
 </style>
 </head>
 <body>
@@ -25,20 +26,35 @@
   <fieldset style="border:0;padding:0;margin:0">
     <legend>Mode</legend>
     <label><input type="radio" name="mode" value="0"> A: Uniform level (bathtub)</label>
-    <label><input type="radio" name="mode" value="1" checked> B: Connected flood from source</label>
+    <label><input type="radio" name="mode" value="1" checked> B: Flash flood from source (hydrodynamic)</label>
   </fieldset>
-  <small>Mode B: click the map to set the flood source.</small>
-  <label for="level">Water level: <span id="lvl"></span> m</label>
-  <input id="level" type="range" step="0.1">
-  <label>Range (m):
-    <input id="rmin" type="number" value="119" aria-label="Minimum level"> –
-    <input id="rmax" type="number" value="159" aria-label="Maximum level">
-  </label>
-  <label for="speed">Rise speed: <span id="spdv"></span> m/s</label>
-  <input id="speed" type="range" min="0.1" max="10" step="0.1" value="1">
+  <small>Click the map to set the flood source (red pin).</small>
+
+  <div id="grpA" class="grp">
+    <label for="level">Water level: <span id="lvl" class="val"></span> m</label>
+    <input id="level" type="range" step="0.1">
+    <label>Range (m):
+      <input id="rmin" type="number" value="119" aria-label="Minimum level"> –
+      <input id="rmax" type="number" value="159" aria-label="Maximum level">
+    </label>
+    <label for="rise">Rise speed: <span id="risev" class="val"></span> m/s</label>
+    <input id="rise" type="range" min="0.1" max="10" step="0.1" value="1">
+  </div>
+
+  <div id="grpB" class="grp">
+    <label for="qpk">Peak inflow: <span id="qpkv" class="val"></span> m³/s</label>
+    <input id="qpk" type="range" min="100" max="20000" step="100" value="3000">
+    <label for="dur">Hydrograph duration: <span id="durv" class="val"></span> h</label>
+    <input id="dur" type="range" min="0.5" max="12" step="0.5" value="3">
+    <label for="man">Manning n: <span id="manv" class="val"></span></label>
+    <input id="man" type="range" min="0.02" max="0.1" step="0.005" value="0.04">
+    <label for="tsc">Speed: <span id="tscv" class="val"></span>× real time</label>
+    <input id="tsc" type="range" min="10" max="2000" step="10" value="300">
+  </div>
+
   <label><input id="s2" type="checkbox" checked> Sentinel-2 image (2025-07-25)</label>
   <button id="play">▶ Play</button><button id="reset">Reset</button>
-  <div id="info" style="margin-top:8px"></div>
+  <div id="info" style="margin-top:8px;line-height:1.5"></div>
 </div>
 <div id="err" role="alert" style="position:absolute;bottom:10px;left:10px;right:10px;background:#b00020;color:#fff;padding:8px;font:12px monospace;display:none;white-space:pre-wrap"></div>
 <script>
@@ -59,106 +75,188 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
   });
   window.viewer = viewer;
   const scene = viewer.scene;
-  // Frame the study area right away, before anything else can fail
   viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(121.40, 23.50, 17000),
                           orientation: { heading: 0, pitch: Cesium.Math.toRadians(-40), roll: 0 } });
   scene.renderError.addEventListener((s, e) => showErr("Render error: " + (e && e.message || e)));
   scene.globe.depthTestAgainstTerrain = true;
-  scene.verticalExaggeration = 1.0;
-  // Sentinel-2 as small tiles (one large PNG failed to load in some browsers)
   const s2 = viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
     url: "s2tiles/{z}/{x}/{y}.png", tilingScheme: new Cesium.GeographicTilingScheme(),
     rectangle: rect, minimumLevel: 8, maximumLevel: 13, credit: "Sentinel-2 (ESA Copernicus)"
   }));
-  s2.imageryProvider.errorEvent.addEventListener(e => { e.retry = false; }); // missing tiles = transparent
+  s2.imageryProvider.errorEvent.addEventListener(e => { e.retry = false; });
 
-  // ---- UI state ----
   const $ = id => document.getElementById(id);
-  let mode = 1, level = 110, playing = false;
-  let src = { lon: 121.42, lat: 23.665 };          // default: Guangfu town
-  let fill = null;                                 // Float32Array: min level at which each cell is reached
+  let mode = 1, level = 119, playing = false;
+  let src = { lon: 121.42, lat: 23.665 };
 
-  const idx = (lon, lat) => {
-    const c = Math.floor((lon - meta.west) / (meta.east - meta.west) * meta.w);
-    const r = Math.floor((meta.north - lat) / (meta.north - meta.south) * meta.h);
-    return (c < 0 || r < 0 || c >= meta.w || r >= meta.h) ? -1 : r * meta.w + c;
+  // ======================= Mode B: hydrodynamic model =======================
+  // Local-inertial shallow-water scheme (Bates et al. 2010, as in LISFLOOD-FP) on a 40 m grid.
+  const F = 2;                                         // downsample factor 20 m -> 40 m
+  const W = Math.floor(meta.w / F), H = Math.floor(meta.h / F), N = W * H;
+  const z = new Float32Array(N);
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    let s = 0; for (let a = 0; a < F; a++) for (let b = 0; b < F; b++) s += dem[(r * F + a) * meta.w + c * F + b];
+    z[r * W + c] = s / (F * F);
+  }
+  const latC = (meta.north + meta.south) / 2 * Math.PI / 180;
+  const DX = (meta.east - meta.west) / W * 111320 * Math.cos(latC);   // m
+  const DY = (meta.north - meta.south) / H * 110574;                  // m
+  const CELL = DX * DY, G = 9.81;
+  const h = new Float32Array(N), qx = new Float32Array(N), qy = new Float32Array(N), kLim = new Float32Array(N).fill(1), hmaxCell = new Float32Array(N);
+  let simT = 0, srcCells = [], volIn = 0;
+
+  const cellOf = (lon, lat) => {
+    const c = Math.floor((lon - meta.west) / (meta.east - meta.west) * W);
+    const r = Math.floor((meta.north - lat) / (meta.north - meta.south) * H);
+    return (c < 1 || r < 1 || c >= W - 1 || r >= H - 1) ? -1 : r * W + c;
   };
 
-  // Priority-flood (minimax path) from source: fill[i] = lowest water level that connects i to source.
-  function floodFrom(start, maxLevel) {
-    const n = meta.w * meta.h, W = meta.w;
-    const f = new Float32Array(n).fill(Infinity);
-    const hk = new Float32Array(n), hv = new Int32Array(n); let hs = 0;   // binary min-heap
-    const push = (k, v) => { let i = hs++; while (i > 0) { const p = (i - 1) >> 1; if (hk[p] <= k) break; hk[i] = hk[p]; hv[i] = hv[p]; i = p; } hk[i] = k; hv[i] = v; };
-    const pop = () => { const v = hv[0], k = hk[--hs], x = hv[hs]; let i = 0;
-      while (true) { let c = 2 * i + 1; if (c >= hs) break; if (c + 1 < hs && hk[c + 1] < hk[c]) c++; if (hk[c] >= k) break; hk[i] = hk[c]; hv[i] = hv[c]; i = c; }
-      hk[i] = k; hv[i] = x; return v; };
-    f[start] = dem[start]; push(f[start], start);
-    while (hs) {
-      const i = pop(), fi = f[i]; if (fi > maxLevel) break;
-      const r = (i / W) | 0, c = i - r * W;
-      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
-        const rr = r + dr, cc = c + dc; if ((!dr && !dc) || rr < 0 || cc < 0 || rr >= meta.h || cc >= W) continue;
-        const j = rr * W + cc; if (f[j] !== Infinity) continue;
-        f[j] = Math.max(fi, dem[j]); push(f[j], j);
+  function resetB() {
+    h.fill(0); qx.fill(0); qy.fill(0); hmaxCell.fill(0); simT = 0; volIn = 0;
+    const i = cellOf(src.lon, src.lat); srcCells = [];
+    if (i >= 0) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) srcCells.push(i + a * W + b);
+  }
+
+  // Triangular hydrograph: rises to peak at 1/4 of the duration, then recedes to zero.
+  function inflow(t) {
+    const D = +$("dur").value * 3600, Q = +$("qpk").value, tp = D / 4;
+    return t <= 0 || t >= D ? 0 : (t < tp ? Q * t / tp : Q * (D - t) / (D - tp));
+  }
+
+  function stepB(dt) {
+    const n2 = (+$("man").value) ** 2, gdt = G * dt;
+    // 1) momentum: update unit-width discharge on cell faces
+    for (let r = 0; r < H; r++) {
+      const o = r * W;
+      for (let c = 0; c < W - 1; c++) {                      // x faces i -> i+1
+        const i = o + c, j = i + 1, ei = z[i] + h[i], ej = z[j] + h[j];
+        const hf = Math.max(ei, ej) - Math.max(z[i], z[j]);
+        if (hf <= 1e-3) { qx[i] = 0; continue; }
+        const q = qx[i], qm = hf * Math.sqrt(G * hf);          // Froude <= 1 cap for steep terrain
+        qx[i] = Math.max(-qm, Math.min(qm, (q - gdt * hf * (ej - ei) / DX) / (1 + gdt * n2 * Math.abs(q) / Math.pow(hf, 7 / 3))));
+      }
+      if (r < H - 1) for (let c = 0; c < W; c++) {           // y faces i -> i+W
+        const i = o + c, j = i + W, ei = z[i] + h[i], ej = z[j] + h[j];
+        const hf = Math.max(ei, ej) - Math.max(z[i], z[j]);
+        if (hf <= 1e-3) { qy[i] = 0; continue; }
+        const q = qy[i], qm = hf * Math.sqrt(G * hf);
+        qy[i] = Math.max(-qm, Math.min(qm, (q - gdt * hf * (ej - ei) / DY) / (1 + gdt * n2 * Math.abs(q) / Math.pow(hf, 7 / 3))));
       }
     }
-    return f;
+    // 2) mass limiter: a cell cannot export more water than it holds (keeps depth >= 0, conserves volume)
+    for (let i = W; i < N - W; i++) {
+      const out = dt * ((Math.max(0, qx[i]) + Math.max(0, -qx[i - 1])) / DX + (Math.max(0, qy[i]) + Math.max(0, -qy[i - W])) / DY);
+      kLim[i] = out > h[i] ? h[i] / out : 1;
+    }
+    for (let i = W; i < N - W; i++) {
+      qx[i] *= qx[i] > 0 ? kLim[i] : kLim[i + 1];
+      qy[i] *= qy[i] > 0 ? kLim[i] : kLim[i + W];
+    }
+    // 3) continuity: update depth
+    for (let r = 1; r < H - 1; r++) for (let c = 1; c < W - 1; c++) {
+      const i = r * W + c;
+      let v = h[i] + dt * ((qx[i - 1] - qx[i]) / DX + (qy[i - W] - qy[i]) / DY);
+      if (v < 1e-6) v = 0;
+      if (z[i] <= 0.5) v = 0;                                 // sea acts as a sink
+      h[i] = v; if (v > hmaxCell[i]) hmaxCell[i] = v;
+    }
+    // open boundaries: water leaves the domain
+    for (let c = 0; c < W; c++) { h[c] = 0; h[N - W + c] = 0; }
+    for (let r = 0; r < H; r++) { h[r * W] = 0; h[r * W + W - 1] = 0; }
+    // 4) source inflow
+    const Q = inflow(simT + dt / 2), add = Q * dt / CELL / srcCells.length;
+    for (const k of srcCells) h[k] += add;
+    volIn += Q * dt; simT += dt;
   }
 
-  // Encode fill (R) and DEM (G) relative to [rmin, rmax] into an 8-bit texture.
-  const canvas = document.createElement("canvas");
-  canvas.width = meta.w; canvas.height = meta.h;
-  function buildTexture() {
+  function stableDt() {
+    let hm = 0.01; for (let i = 0; i < N; i++) if (h[i] > hm) hm = h[i];
+    return Math.min(10, 0.7 * Math.min(DX, DY) / Math.sqrt(G * hm));
+  }
+
+  // Depth -> RGBA texture, draped on terrain with a GroundPrimitive.
+  const rgba = new Uint8Array(N * 4);
+  const depthTex = new Cesium.Texture({ context: scene.context, width: W, height: H,
+    source: { width: W, height: H, arrayBufferView: rgba } });
+  function paintB() {
+    let wet = 0, dmax = 0;
+    for (let r = 0; r < H; r++) {
+      const dst = (H - 1 - r) * W;                       // texture row 0 = south
+      for (let c = 0; c < W; c++) {
+        const d = h[r * W + c], p = (dst + c) * 4;
+        if (d < 0.05) { rgba[p + 3] = 0; continue; }
+        wet++; if (d > dmax) dmax = d;
+        const k = Math.min(1, Math.sqrt(d / 4));         // 0 m light cyan -> 4 m+ dark blue
+        rgba[p] = 120 - 115 * k; rgba[p + 1] = 200 - 150 * k; rgba[p + 2] = 235 - 115 * k;
+        rgba[p + 3] = 140 + 100 * k;
+      }
+    }
+    depthTex.copyFrom({ source: { width: W, height: H, arrayBufferView: rgba } });
+    return { wet, dmax };
+  }
+  // Texture uniforms must start as an image id; the Texture object is assigned afterwards.
+  const matB = new Cesium.Material({ fabric: { type: "Image", uniforms: { image: Cesium.Material.DefaultImageId } } });
+  matB.uniforms.image = depthTex;
+  const waterB = scene.groundPrimitives.add(new Cesium.GroundPrimitive({
+    geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.RectangleGeometry({ rectangle: rect }) }),
+    appearance: new Cesium.MaterialAppearance({
+      material: matB, translucent: true }),
+    classificationType: Cesium.ClassificationType.TERRAIN, asynchronous: false
+  }));
+
+  // ======================= Mode A: bathtub level =======================
+  const demRgba = new Uint8Array(meta.w * meta.h * 4);
+  const demTex = new Cesium.Texture({ context: scene.context, width: meta.w, height: meta.h,
+    source: { width: meta.w, height: meta.h, arrayBufferView: demRgba } });
+  function buildDemTex() {
     const lo = +$("rmin").value, hi = +$("rmax").value, s = 255 / (hi - lo);
-    const ctx = canvas.getContext("2d"), img = ctx.createImageData(meta.w, meta.h), d = img.data;
-    for (let i = 0; i < dem.length; i++) {
-      d[i * 4]     = Math.min(255, Math.max(0, (fill[i] - lo) * s)); // Infinity -> 255 (never)
-      d[i * 4 + 1] = Math.min(255, Math.max(0, (dem[i] - lo) * s));
-      d[i * 4 + 3] = 255;
+    for (let r = 0; r < meta.h; r++) for (let c = 0; c < meta.w; c++) {
+      const p = ((meta.h - 1 - r) * meta.w + c) * 4;
+      demRgba[p + 1] = Math.min(255, Math.max(0, (dem[r * meta.w + c] - lo) * s)); demRgba[p + 3] = 255;
     }
-    ctx.putImageData(img, 0, 0);
-    material.uniforms.image = canvas;   // pass the canvas directly (no data-URL round trip)
-    material.uniforms.base = lo; material.uniforms.scale = (hi - lo) / 255;
+    demTex.copyFrom({ source: { width: meta.w, height: meta.h, arrayBufferView: demRgba } });
+    matA.uniforms.base = lo; matA.uniforms.scale = (hi - lo) / 255;
   }
-
-  // ---- Water surface: flat rectangle at height 0, lifted with modelMatrix ----
-  const material = new Cesium.Material({
-    fabric: {
-      uniforms: { image: Cesium.Material.DefaultImageId, level: level, base: 100, scale: 0.2, mode: 1,
-                  shallow: new Cesium.Color(0.45, 0.75, 0.9, 0.55), deep: new Cesium.Color(0.02, 0.18, 0.4, 0.85), time: 0 },
-      source: `
-        czm_material czm_getMaterial(czm_materialInput mi) {
-          czm_material m = czm_getDefaultMaterial(mi);
-          vec4 t = texture(image, mi.st);
-          float fillLv = base + t.r * 255.0 * scale;
-          float demLv  = base + t.g * 255.0 * scale;
-          bool wet = mode > 0.5 ? (t.r < 0.998 && fillLv <= level) : (demLv <= level);
-          if (!wet) { m.alpha = 0.0; return m; }
-          float depth = level - demLv;
-          float k = clamp(depth / 5.0, 0.0, 1.0);
-          vec2 p = mi.st * 900.0;
-          float w = sin(p.x + time * 1.7) * cos(p.y * 1.3 + time * 1.1);
-          m.normal = normalize(mi.normalEC + 0.08 * vec3(w, w * 0.5, 0.0));
-          m.diffuse = mix(shallow.rgb, deep.rgb, k);
-          m.specular = 0.6; m.shininess = 40.0;
-          m.alpha = mix(shallow.a, deep.a, k);
-          return m;
-        }`
-    }
-  });
-  const water = scene.primitives.add(new Cesium.Primitive({
-    geometryInstances: new Cesium.GeometryInstance({
-      geometry: new Cesium.RectangleGeometry({ rectangle: rect, height: 0, granularity: Cesium.Math.toRadians(0.002),
-                                               vertexFormat: Cesium.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat })
-    }),
-    appearance: new Cesium.MaterialAppearance({ material, translucent: true,
-                                                materialSupport: Cesium.MaterialAppearance.MaterialSupport.TEXTURED }),
+  const matA = new Cesium.Material({ fabric: {
+    uniforms: { image: Cesium.Material.DefaultImageId, level: 119, base: 100, scale: 0.2, time: 0,
+                shallow: new Cesium.Color(0.45, 0.75, 0.9, 0.55), deep: new Cesium.Color(0.02, 0.18, 0.4, 0.85) },
+    source: `
+      czm_material czm_getMaterial(czm_materialInput mi) {
+        czm_material m = czm_getDefaultMaterial(mi);
+        float demLv = base + texture(image, mi.st).g * 255.0 * scale;
+        if (demLv > level) { m.alpha = 0.0; return m; }
+        float k = clamp((level - demLv) / 5.0, 0.0, 1.0);
+        vec2 p = mi.st * 900.0;
+        float w = sin(p.x + time * 1.7) * cos(p.y * 1.3 + time * 1.1);
+        m.normal = normalize(mi.normalEC + 0.08 * vec3(w, w * 0.5, 0.0));
+        m.diffuse = mix(shallow.rgb, deep.rgb, k); m.specular = 0.6; m.shininess = 40.0;
+        m.alpha = mix(shallow.a, deep.a, k);
+        return m;
+      }` } });
+  matA.uniforms.image = demTex;
+  const waterA = scene.primitives.add(new Cesium.Primitive({
+    geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.RectangleGeometry({ rectangle: rect, height: 0,
+      granularity: Cesium.Math.toRadians(0.002), vertexFormat: Cesium.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat }) }),
+    appearance: new Cesium.MaterialAppearance({ material: matA, translucent: true,
+      materialSupport: Cesium.MaterialAppearance.MaterialSupport.TEXTURED }),
     asynchronous: false
   }));
   const center = Cesium.Cartesian3.fromRadians(Cesium.Rectangle.center(rect).longitude, Cesium.Rectangle.center(rect).latitude, 0);
   const up = scene.globe.ellipsoid.geodeticSurfaceNormal(center, new Cesium.Cartesian3());
 
+  function setLevel(v) {
+    const lo = +$("rmin").value, hi = +$("rmax").value;
+    level = Math.min(hi, Math.max(lo, v));
+    $("level").min = lo; $("level").max = hi; $("level").value = level; $("lvl").textContent = level.toFixed(1);
+    matA.uniforms.level = level;
+    waterA.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(up, level, new Cesium.Cartesian3()));
+  }
+  function autoRange() {
+    const i = cellOf(src.lon, src.lat); if (i < 0) return;
+    const lo = Math.floor(z[i]) - 1; $("rmin").value = lo; $("rmax").value = lo + 40; buildDemTex(); setLevel(lo);
+  }
+
+  // ======================= UI =======================
   const srcPin = viewer.entities.add({
     position: Cesium.Cartesian3.fromDegrees(src.lon, src.lat),
     point: { pixelSize: 10, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2,
@@ -166,61 +264,63 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
     label: { text: "Flood source", font: "13px sans-serif", pixelOffset: new Cesium.Cartesian2(0, -18),
              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Infinity }
   });
+  const bind = (id, fmt = v => v) => { const f = () => $(id + "v").textContent = fmt($(id).value); $(id).addEventListener("input", f); f(); };
+  bind("rise"); bind("qpk"); bind("dur"); bind("man"); bind("tsc");
 
-  // Start the range just below the source ground so the water appears immediately.
-  function autoRange() {
-    const g = dem[idx(src.lon, src.lat)], lo = Math.floor(g) - 1;
-    $("rmin").value = lo; $("rmax").value = lo + 40; level = lo;
+  function applyMode() {
+    waterA.show = mode === 0; waterB.show = mode === 1;
+    $("grpA").style.display = mode === 0 ? "" : "none"; $("grpB").style.display = mode === 1 ? "" : "none";
   }
-
-  function recompute() {
-    const i = idx(src.lon, src.lat); if (i < 0) return;
-    fill = floodFrom(i, +$("rmax").value);
-    buildTexture(); updateLevel(level);
+  function reset() { resetB(); paintB(); autoRange(); info(); }
+  function info() {
+    if (mode === 0) {
+      const lo = +$("rmin").value; let n = 0; for (let i = 0; i < N; i++) if (z[i] <= level && z[i] > 0.5) n++;
+      $("info").textContent = `Flooded area: ${(n * CELL / 1e6).toFixed(2)} km² | source ground: ${z[cellOf(src.lon, src.lat)].toFixed(1)} m`;
+    }
   }
-
-  function updateLevel(v) {
-    const lo = +$("rmin").value, hi = +$("rmax").value;
-    level = Math.min(hi, Math.max(lo, v));
-    $("level").min = lo; $("level").max = hi; $("level").value = level;
-    $("lvl").textContent = level.toFixed(1);
-    material.uniforms.level = level; material.uniforms.mode = mode;
-    water.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(up, level, new Cesium.Cartesian3()));
-    // flooded area (km²), approx cell area at 20 m
-    let n = 0; const ref = mode ? fill : dem;
-    for (let i = 0; i < ref.length; i++) if (ref[i] <= level) n++;
-    const cellKm2 = (meta.east - meta.west) / meta.w * 111.32 * Math.cos(Cesium.Math.toRadians(23.67)) * (meta.north - meta.south) / meta.h * 110.57;
-    $("info").textContent = `Flooded area: ${(n * cellKm2).toFixed(2)} km²  |  source ground: ${dem[idx(src.lon, src.lat)].toFixed(1)} m`;
-  }
-
-  // ---- Events ----
-  document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => { mode = +r.value; updateLevel(level); });
-  $("level").oninput = e => updateLevel(+e.target.value);
-  $("rmin").onchange = $("rmax").onchange = recompute;
-  $("speed").oninput = e => $("spdv").textContent = e.target.value; $("spdv").textContent = $("speed").value;
+  document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => { mode = +r.value; applyMode(); info(); });
+  $("level").oninput = e => { setLevel(+e.target.value); info(); };
+  $("rmin").onchange = $("rmax").onchange = () => { buildDemTex(); setLevel(level); };
   $("s2").onchange = e => s2.show = e.target.checked;
   $("play").onclick = () => { playing = !playing; $("play").textContent = playing ? "⏸ Pause" : "▶ Play"; };
-  $("reset").onclick = () => updateLevel(+$("rmin").value);
+  $("reset").onclick = reset;
 
   new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction(e => {
-    const c = scene.globe.pick(viewer.camera.getPickRay(e.position), scene);  // terrain only, ignores water
+    const c = scene.globe.pick(viewer.camera.getPickRay(e.position), scene);
     if (!c) return;
     const g = Cesium.Cartographic.fromCartesian(c);
-    src = { lon: Cesium.Math.toDegrees(g.longitude), lat: Cesium.Math.toDegrees(g.latitude) };
-    srcPin.position = Cesium.Cartesian3.fromDegrees(src.lon, src.lat);
-    autoRange(); recompute();
+    const lon = Cesium.Math.toDegrees(g.longitude), lat = Cesium.Math.toDegrees(g.latitude);
+    if (cellOf(lon, lat) < 0) return;
+    src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat);
+    reset();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-  let last = performance.now();
+  // ======================= Main loop =======================
+  let last = performance.now(), lastPaint = 0;
   scene.preRender.addEventListener(() => {
-    const now = performance.now(), dt = (now - last) / 1000; last = now;
-    material.uniforms.time = now / 1000;
-    if (playing) { updateLevel(level + dt * $("speed").value); if (level >= +$("rmax").value) $("play").click(); }
+    const now = performance.now(), rdt = Math.min(0.1, (now - last) / 1000); last = now;
+    matA.uniforms.time = now / 1000;
+    if (!playing) return;
+    if (mode === 0) {
+      setLevel(level + rdt * $("rise").value); info();
+      if (level >= +$("rmax").value) $("play").click();
+      return;
+    }
+    // Advance the model by (real dt × speed) simulated seconds, within a per-frame compute budget.
+    let todo = rdt * $("tsc").value; const t0 = performance.now();
+    while (todo > 0 && performance.now() - t0 < 25) { const dt = Math.min(stableDt(), todo); stepB(dt); todo -= dt; }
+    if (now - lastPaint > 80) {
+      lastPaint = now;
+      const { wet, dmax } = paintB(), hh = Math.floor(simT / 3600), mm = Math.floor(simT % 3600 / 60);
+      $("info").innerHTML = `Sim time: <b>${hh}h ${String(mm).padStart(2, "0")}m</b> | inflow ${inflow(simT).toFixed(0)} m³/s<br>` +
+        `Flooded: ${(wet * CELL / 1e6).toFixed(2)} km² | max depth ${dmax.toFixed(1)} m<br>` +
+        `Volume in: ${(volIn / 1e6).toFixed(2)} million m³`;
+    }
   });
 
-  autoRange(); recompute();
-  // Frame the study area (centred on the S2 footprint, slightly oblique view)
-  $("play").click();   // start the simulation automatically
+  applyMode(); reset();
+  window._sim = { h, z, W, H, setSource: (lon, lat) => { src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat); reset(); } };
+  $("play").click();
 })();
 </script>
 </body>
