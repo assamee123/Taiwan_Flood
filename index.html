@@ -7,40 +7,42 @@
 <link href="https://cdn.jsdelivr.net/npm/cesium@1.122.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>
   html, body, #map { margin: 0; width: 100%; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; }
-  #ui { position: absolute; top: 10px; left: 10px; background: rgba(20,30,40,.88); color: #eee; padding: 12px 14px;
-        border-radius: 8px; width: 300px; font-size: 13px; max-height: 92vh; overflow: auto; }
-  #ui h3 { margin: 0 0 8px; font-size: 15px; }
-  #ui label { display: block; margin-top: 7px; }
-  #ui input[type=range] { width: 100%; }
-  #ui input[type=number] { width: 70px; }
-  #ui button { margin: 8px 4px 0 0; padding: 4px 10px; }
+  .panel { position: absolute; background: rgba(20,30,40,.88); color: #eee; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+  #ui { top: 10px; left: 10px; width: 300px; max-height: 70vh; overflow: auto; }
+  #ts { bottom: 30px; left: 50%; transform: translateX(-50%); width: min(720px, 90vw); }
+  .panel h3 { margin: 0 0 6px; font-size: 15px; }
+  .panel label { display: block; margin-top: 6px; }
+  input[type=range] { width: 100%; }
+  #ui input[type=number] { width: 64px; }
+  button { margin: 6px 4px 0 0; padding: 4px 10px; }
   .val { font-weight: bold; color: #7fd4ff; }
   small { color: #aab; }
-  .grp { border-top: 1px solid #456; margin-top: 8px; padding-top: 4px; }
+  .grp { border-top: 1px solid #456; margin-top: 8px; padding-top: 2px; }
+  #ticks { display: flex; justify-content: space-between; font-size: 10px; color: #aab; }
+  #ticks span.ev { color: #ff8a65; font-weight: bold; }
+  #legend { height: 10px; border-radius: 3px; margin-top: 6px;
+            background: linear-gradient(90deg, rgb(120,200,235), rgb(5,50,120)); }
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="ui" role="region" aria-label="Flood controls">
+
+<div id="ui" class="panel" role="region" aria-label="Flood controls">
   <h3>Flood simulation – Guangfu, Hualien</h3>
   <fieldset style="border:0;padding:0;margin:0">
     <legend>Mode</legend>
-    <label><input type="radio" name="mode" value="0"> A: Uniform level (bathtub)</label>
+    <label><input type="radio" name="mode" value="0"> A: Uniform water level (bathtub)</label>
     <label><input type="radio" name="mode" value="1" checked> B: Flash flood from source (hydrodynamic)</label>
   </fieldset>
-  <small>Click the map to set the flood source (red pin).</small>
-
+  <small>Click the map to place the flood source (red pin). Water then follows the terrain downhill.</small>
   <div id="grpA" class="grp">
     <label for="level">Water level: <span id="lvl" class="val"></span> m</label>
     <input id="level" type="range" step="0.1">
-    <label>Range (m):
-      <input id="rmin" type="number" value="119" aria-label="Minimum level"> –
-      <input id="rmax" type="number" value="159" aria-label="Maximum level">
-    </label>
+    <label>Range (m): <input id="rmin" type="number" aria-label="Minimum level"> –
+      <input id="rmax" type="number" aria-label="Maximum level"></label>
     <label for="rise">Rise speed: <span id="risev" class="val"></span> m/s</label>
     <input id="rise" type="range" min="0.1" max="10" step="0.1" value="1">
   </div>
-
   <div id="grpB" class="grp">
     <label for="qpk">Peak inflow: <span id="qpkv" class="val"></span> m³/s</label>
     <input id="qpk" type="range" min="100" max="20000" step="100" value="3000">
@@ -51,21 +53,33 @@
     <label for="tsc">Speed: <span id="tscv" class="val"></span>× real time</label>
     <input id="tsc" type="range" min="10" max="2000" step="10" value="300">
   </div>
-
-  <label><input id="s2" type="checkbox" checked> Sentinel-2 image (2025-07-25)</label>
+  <label for="wop">Water opacity: <span id="wopv" class="val"></span></label>
+  <input id="wop" type="range" min="0.2" max="1" step="0.05" value="0.85">
+  <div id="legend" aria-hidden="true"></div><small>0 m &nbsp;→&nbsp; 4 m+ depth</small><br>
   <button id="play">▶ Play</button><button id="reset">Reset</button>
-  <div id="info" style="margin-top:8px;line-height:1.5"></div>
+  <div id="info" style="margin-top:6px;line-height:1.5"></div>
 </div>
-<div id="err" role="alert" style="position:absolute;bottom:10px;left:10px;right:10px;background:#b00020;color:#fff;padding:8px;font:12px monospace;display:none;white-space:pre-wrap"></div>
+
+<div id="ts" class="panel" role="region" aria-label="Sentinel-2 time series">
+  <label for="date" style="margin:0">Sentinel-2 image: <span id="datev" class="val"></span> <span id="tag"></span></label>
+  <input id="date" type="range" min="0" step="1" value="0">
+  <div id="ticks"></div>
+  <button id="tplay">▶ Animate time series</button>
+  <label style="display:inline"><input id="s2" type="checkbox" checked> show imagery</label>
+</div>
+
+<div id="err" role="alert" style="position:absolute;bottom:4px;left:10px;right:10px;background:#b00020;color:#fff;padding:8px;font:12px monospace;display:none;white-space:pre-wrap"></div>
 <script>
 function showErr(m) { const e = document.getElementById("err"); e.style.display = "block"; e.textContent += m + "\n"; console.error(m); }
 window.addEventListener("error", e => showErr("JS error: " + e.message + " @" + e.lineno));
 window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason)));
+
 (async () => {
-  Cesium.Ion.defaultAccessToken = "";
+  const $ = id => document.getElementById(id);
   const meta = await (await fetch("data/meta.json")).json();
   const dem = new Float32Array(await (await fetch("data/dem.bin")).arrayBuffer());
   const rect = Cesium.Rectangle.fromDegrees(meta.west, meta.south, meta.east, meta.north);
+  const EVENT = "20250923";   // Mataian Creek barrier-lake overflow into Guangfu
 
   const viewer = new Cesium.Viewer("map", {
     terrainProvider: await Cesium.CesiumTerrainProvider.fromUrl("terrain/"),
@@ -75,251 +89,203 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
   });
   window.viewer = viewer;
   const scene = viewer.scene;
-  viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(121.40, 23.50, 17000),
-                          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-40), roll: 0 } });
-  scene.renderError.addEventListener((s, e) => showErr("Render error: " + (e && e.message || e)));
   scene.globe.depthTestAgainstTerrain = true;
-  const s2 = viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
-    url: "s2tiles/{z}/{x}/{y}.png", tilingScheme: new Cesium.GeographicTilingScheme(),
-    rectangle: rect, minimumLevel: 8, maximumLevel: 13, credit: "Sentinel-2 (ESA Copernicus)"
-  }));
-  s2.imageryProvider.errorEvent.addEventListener(e => { e.retry = false; });
+  scene.renderError.addEventListener((s, e) => showErr("Render error: " + (e && e.message || e)));
+  viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(121.39, 23.53, 16000),
+                          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-42), roll: 0 } });
 
-  const $ = id => document.getElementById(id);
-  let mode = 1, level = 119, playing = false;
-  let src = { lon: 121.42, lat: 23.665 };
+  // ======================= Sentinel-2 time series =======================
+  const fmt = d => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}`;
+  const s2Layers = meta.dates.map(d => {
+    const p = new Cesium.UrlTemplateImageryProvider({ url: `s2/${d}/{z}/{x}/{y}.png`,
+      tilingScheme: new Cesium.GeographicTilingScheme(), rectangle: rect, minimumLevel: 8, maximumLevel: 13,
+      credit: "Contains modified Copernicus Sentinel-2 data" });
+    p.errorEvent.addEventListener(e => { e.retry = false; });
+    const l = viewer.imageryLayers.addImageryProvider(p); l.show = false; return l;
+  });
+  let dateIdx = Math.max(0, meta.dates.findIndex(d => d > EVENT) - 1);   // last image before the event
+  $("date").max = meta.dates.length - 1;
+  $("ticks").innerHTML = meta.dates.map(d => `<span class="${d > EVENT && d < "20251101" ? "ev" : ""}">${d.slice(2, 4)}/${d.slice(4, 6)}</span>`).join("");
+  function setDate(i) {
+    dateIdx = i; $("date").value = i;
+    s2Layers.forEach((l, k) => l.show = $("s2").checked && k === i);
+    const d = meta.dates[i]; $("datev").textContent = fmt(d);
+    $("tag").textContent = d < EVENT ? "(before 2025-09-23 flood)" : "(after 2025-09-23 flood)";
+    $("tag").style.color = d < EVENT ? "#9ccc65" : "#ff8a65";
+  }
+  $("date").oninput = e => setDate(+e.target.value);
+  $("s2").onchange = () => setDate(dateIdx);
+  let tsTimer = null;
+  $("tplay").onclick = () => {
+    if (tsTimer) { clearInterval(tsTimer); tsTimer = null; $("tplay").textContent = "▶ Animate time series"; return; }
+    $("tplay").textContent = "⏸ Stop";
+    tsTimer = setInterval(() => setDate((dateIdx + 1) % meta.dates.length), 1500);
+  };
+  setDate(dateIdx);
 
-  // ======================= Mode B: hydrodynamic model =======================
-  // Local-inertial shallow-water scheme (Bates et al. 2010, as in LISFLOOD-FP) on a 40 m grid.
-  const F = 2;                                         // downsample factor 20 m -> 40 m
-  const W = Math.floor(meta.w / F), H = Math.floor(meta.h / F), N = W * H;
+  // ======================= Model grid (40 m, exactly aligned with DEM/imagery) =======================
+  const F = 2, W = meta.w / F, H = meta.h / F, N = W * H;
   const z = new Float32Array(N);
   for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
     let s = 0; for (let a = 0; a < F; a++) for (let b = 0; b < F; b++) s += dem[(r * F + a) * meta.w + c * F + b];
     z[r * W + c] = s / (F * F);
   }
-  const latC = (meta.north + meta.south) / 2 * Math.PI / 180;
-  const DX = (meta.east - meta.west) / W * 111320 * Math.cos(latC);   // m
-  const DY = (meta.north - meta.south) / H * 110574;                  // m
-  const CELL = DX * DY, G = 9.81;
-  const h = new Float32Array(N), qx = new Float32Array(N), qy = new Float32Array(N), kLim = new Float32Array(N).fill(1), hmaxCell = new Float32Array(N);
-  let simT = 0, srcCells = [], volIn = 0;
-
+  const latC = (meta.north + meta.south) / 2 * Math.PI / 180, G = 9.81;
+  const DX = (meta.east - meta.west) / W * 111320 * Math.cos(latC), DY = (meta.north - meta.south) / H * 110574, CELL = DX * DY;
   const cellOf = (lon, lat) => {
     const c = Math.floor((lon - meta.west) / (meta.east - meta.west) * W);
     const r = Math.floor((meta.north - lat) / (meta.north - meta.south) * H);
-    return (c < 1 || r < 1 || c >= W - 1 || r >= H - 1) ? -1 : r * W + c;
+    return (c < 2 || r < 2 || c >= W - 2 || r >= H - 2) ? -1 : r * W + c;
   };
 
-  function resetB() {
-    h.fill(0); qx.fill(0); qy.fill(0); hmaxCell.fill(0); simT = 0; volIn = 0;
-    const i = cellOf(src.lon, src.lat); srcCells = [];
-    if (i >= 0) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) srcCells.push(i + a * W + b);
-  }
-
-  // Triangular hydrograph: rises to peak at 1/4 of the duration, then recedes to zero.
-  function inflow(t) {
-    const D = +$("dur").value * 3600, Q = +$("qpk").value, tp = D / 4;
-    return t <= 0 || t >= D ? 0 : (t < tp ? Q * t / tp : Q * (D - t) / (D - tp));
-  }
-
+  // ---- Mode B: local-inertial shallow-water model (Bates et al. 2010, LISFLOOD-FP style) ----
+  const h = new Float32Array(N), qx = new Float32Array(N), qy = new Float32Array(N), kLim = new Float32Array(N);
+  let simT = 0, volIn = 0, srcCells = [];
+  const inflow = t => { const D = +$("dur").value * 3600, Q = +$("qpk").value, tp = D / 4;
+    return t <= 0 || t >= D ? 0 : (t < tp ? Q * t / tp : Q * (D - t) / (D - tp)); };
   function stepB(dt) {
     const n2 = (+$("man").value) ** 2, gdt = G * dt;
-    // 1) momentum: update unit-width discharge on cell faces
-    for (let r = 0; r < H; r++) {
-      const o = r * W;
-      for (let c = 0; c < W - 1; c++) {                      // x faces i -> i+1
-        const i = o + c, j = i + 1, ei = z[i] + h[i], ej = z[j] + h[j];
-        const hf = Math.max(ei, ej) - Math.max(z[i], z[j]);
-        if (hf <= 1e-3) { qx[i] = 0; continue; }
-        const q = qx[i], qm = hf * Math.sqrt(G * hf);          // Froude <= 1 cap for steep terrain
-        qx[i] = Math.max(-qm, Math.min(qm, (q - gdt * hf * (ej - ei) / DX) / (1 + gdt * n2 * Math.abs(q) / Math.pow(hf, 7 / 3))));
-      }
-      if (r < H - 1) for (let c = 0; c < W; c++) {           // y faces i -> i+W
-        const i = o + c, j = i + W, ei = z[i] + h[i], ej = z[j] + h[j];
-        const hf = Math.max(ei, ej) - Math.max(z[i], z[j]);
-        if (hf <= 1e-3) { qy[i] = 0; continue; }
-        const q = qy[i], qm = hf * Math.sqrt(G * hf);
-        qy[i] = Math.max(-qm, Math.min(qm, (q - gdt * hf * (ej - ei) / DY) / (1 + gdt * n2 * Math.abs(q) / Math.pow(hf, 7 / 3))));
-      }
+    const face = (q, ei, ej, zi, zj, d) => {
+      const hf = Math.max(ei, ej) - Math.max(zi, zj);
+      if (hf <= 1e-3) return 0;
+      const qm = hf * Math.sqrt(G * hf);                       // Froude <= 1 cap (steep terrain stability)
+      const v = (q - gdt * hf * (ej - ei) / d) / (1 + gdt * n2 * Math.abs(q) / Math.pow(hf, 7 / 3));
+      return v > qm ? qm : v < -qm ? -qm : v;
+    };
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+      const i = r * W + c, ei = z[i] + h[i];
+      if (c < W - 1) qx[i] = face(qx[i], ei, z[i + 1] + h[i + 1], z[i], z[i + 1], DX);
+      if (r < H - 1) qy[i] = face(qy[i], ei, z[i + W] + h[i + W], z[i], z[i + W], DY);
     }
-    // 2) mass limiter: a cell cannot export more water than it holds (keeps depth >= 0, conserves volume)
-    for (let i = W; i < N - W; i++) {
+    for (let i = W; i < N - W; i++) {                         // no cell may export more than it holds
       const out = dt * ((Math.max(0, qx[i]) + Math.max(0, -qx[i - 1])) / DX + (Math.max(0, qy[i]) + Math.max(0, -qy[i - W])) / DY);
       kLim[i] = out > h[i] ? h[i] / out : 1;
     }
-    for (let i = W; i < N - W; i++) {
-      qx[i] *= qx[i] > 0 ? kLim[i] : kLim[i + 1];
-      qy[i] *= qy[i] > 0 ? kLim[i] : kLim[i + W];
-    }
-    // 3) continuity: update depth
+    for (let i = W; i < N - W; i++) { qx[i] *= qx[i] > 0 ? kLim[i] : kLim[i + 1]; qy[i] *= qy[i] > 0 ? kLim[i] : kLim[i + W]; }
     for (let r = 1; r < H - 1; r++) for (let c = 1; c < W - 1; c++) {
-      const i = r * W + c;
-      let v = h[i] + dt * ((qx[i - 1] - qx[i]) / DX + (qy[i - W] - qy[i]) / DY);
-      if (v < 1e-6) v = 0;
-      if (z[i] <= 0.5) v = 0;                                 // sea acts as a sink
-      h[i] = v; if (v > hmaxCell[i]) hmaxCell[i] = v;
+      const i = r * W + c, v = h[i] + dt * ((qx[i - 1] - qx[i]) / DX + (qy[i - W] - qy[i]) / DY);
+      h[i] = v < 1e-6 ? 0 : v;
     }
-    // open boundaries: water leaves the domain
-    for (let c = 0; c < W; c++) { h[c] = 0; h[N - W + c] = 0; }
+    for (let c = 0; c < W; c++) { h[c] = 0; h[N - W + c] = 0; }          // open boundaries
     for (let r = 0; r < H; r++) { h[r * W] = 0; h[r * W + W - 1] = 0; }
-    // 4) source inflow
     const Q = inflow(simT + dt / 2), add = Q * dt / CELL / srcCells.length;
     for (const k of srcCells) h[k] += add;
     volIn += Q * dt; simT += dt;
   }
+  const stableDt = () => { let m = 0.01; for (let i = 0; i < N; i++) if (h[i] > m) m = h[i];
+    return Math.min(10, 0.7 * Math.min(DX, DY) / Math.sqrt(G * m)); };
 
-  function stableDt() {
-    let hm = 0.01; for (let i = 0; i < N; i++) if (h[i] > hm) hm = h[i];
-    return Math.min(10, 0.7 * Math.min(DX, DY) / Math.sqrt(G * hm));
-  }
-
-  // Depth -> RGBA texture, draped on terrain with a GroundPrimitive.
-  const rgba = new Uint8Array(N * 4);
-  const depthTex = new Cesium.Texture({ context: scene.context, width: W, height: H,
-    source: { width: W, height: H, arrayBufferView: rgba } });
-  function paintB() {
+  // ======================= Water overlay (imagery layer = exact geographic draping) =======================
+  const depthCv = document.createElement("canvas"); depthCv.width = W; depthCv.height = H;
+  const dctx = depthCv.getContext("2d"), dimg = dctx.createImageData(W, H), px = dimg.data;
+  let level = 0;
+  function paint() {                                          // canvas row 0 = north, same as grid
     let wet = 0, dmax = 0;
-    for (let r = 0; r < H; r++) {
-      const dst = (H - 1 - r) * W;                       // texture row 0 = south
-      for (let c = 0; c < W; c++) {
-        const d = h[r * W + c], p = (dst + c) * 4;
-        if (d < 0.05) { rgba[p + 3] = 0; continue; }
-        wet++; if (d > dmax) dmax = d;
-        const k = Math.min(1, Math.sqrt(d / 4));         // 0 m light cyan -> 4 m+ dark blue
-        rgba[p] = 120 - 115 * k; rgba[p + 1] = 200 - 150 * k; rgba[p + 2] = 235 - 115 * k;
-        rgba[p + 3] = 140 + 100 * k;
-      }
+    for (let i = 0; i < N; i++) {
+      const d = mode === 0 ? level - z[i] : h[i], p = i * 4;
+      if (d < 0.05) { px[p + 3] = 0; continue; }
+      wet++; if (d > dmax) dmax = d;
+      const k = Math.min(1, Math.sqrt(d / 4));
+      px[p] = 120 - 115 * k; px[p + 1] = 200 - 150 * k; px[p + 2] = 235 - 115 * k; px[p + 3] = 150 + 105 * k;
     }
-    depthTex.copyFrom({ source: { width: W, height: H, arrayBufferView: rgba } });
+    dctx.putImageData(dimg, 0, 0);
+    swapWater();
     return { wet, dmax };
   }
-  // Texture uniforms must start as an image id; the Texture object is assigned afterwards.
-  const matB = new Cesium.Material({ fabric: { type: "Image", uniforms: { image: Cesium.Material.DefaultImageId } } });
-  matB.uniforms.image = depthTex;
-  const waterB = scene.groundPrimitives.add(new Cesium.GroundPrimitive({
-    geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.RectangleGeometry({ rectangle: rect }) }),
-    appearance: new Cesium.MaterialAppearance({
-      material: matB, translucent: true }),
-    classificationType: Cesium.ClassificationType.TERRAIN, asynchronous: false
-  }));
-
-  // ======================= Mode A: bathtub level =======================
-  const demRgba = new Uint8Array(meta.w * meta.h * 4);
-  const demTex = new Cesium.Texture({ context: scene.context, width: meta.w, height: meta.h,
-    source: { width: meta.w, height: meta.h, arrayBufferView: demRgba } });
-  function buildDemTex() {
-    const lo = +$("rmin").value, hi = +$("rmax").value, s = 255 / (hi - lo);
-    for (let r = 0; r < meta.h; r++) for (let c = 0; c < meta.w; c++) {
-      const p = ((meta.h - 1 - r) * meta.w + c) * 4;
-      demRgba[p + 1] = Math.min(255, Math.max(0, (dem[r * meta.w + c] - lo) * s)); demRgba[p + 3] = 255;
+  // Minimal ImageryProvider that serves tiles cut from a canvas snapshot.
+  class CanvasProvider {
+    constructor(cv) {
+      this.cv = cv; this.tilingScheme = new Cesium.GeographicTilingScheme(); this.rectangle = rect;
+      this.tileWidth = this.tileHeight = 256; this.minimumLevel = 0; this.maximumLevel = 16;
+      this.ready = true; this.readyPromise = Promise.resolve(true); this.hasAlphaChannel = true;
+      this.errorEvent = new Cesium.Event(); this.credit = undefined; this.tileDiscardPolicy = undefined; this.proxy = undefined;
     }
-    demTex.copyFrom({ source: { width: meta.w, height: meta.h, arrayBufferView: demRgba } });
-    matA.uniforms.base = lo; matA.uniforms.scale = (hi - lo) / 255;
+    getTileCredits() { return undefined; }
+    pickFeatures() { return undefined; }
+    requestImage(x, y, l) {
+      const r = this.tilingScheme.tileXYToRectangle(x, y, l), t = document.createElement("canvas");
+      t.width = t.height = 256;
+      const sx = (r.west - rect.west) / (rect.east - rect.west) * W, sy = (rect.north - r.north) / (rect.north - rect.south) * H;
+      const sw = r.width / (rect.east - rect.west) * W, sh = r.height / (rect.north - rect.south) * H;
+      const c = t.getContext("2d"); c.imageSmoothingEnabled = l < 13;
+      c.drawImage(this.cv, sx, sy, sw, sh, 0, 0, 256, 256);
+      return Promise.resolve(t);
+    }
   }
-  const matA = new Cesium.Material({ fabric: {
-    uniforms: { image: Cesium.Material.DefaultImageId, level: 119, base: 100, scale: 0.2, time: 0,
-                shallow: new Cesium.Color(0.45, 0.75, 0.9, 0.55), deep: new Cesium.Color(0.02, 0.18, 0.4, 0.85) },
-    source: `
-      czm_material czm_getMaterial(czm_materialInput mi) {
-        czm_material m = czm_getDefaultMaterial(mi);
-        float demLv = base + texture(image, mi.st).g * 255.0 * scale;
-        if (demLv > level) { m.alpha = 0.0; return m; }
-        float k = clamp((level - demLv) / 5.0, 0.0, 1.0);
-        vec2 p = mi.st * 900.0;
-        float w = sin(p.x + time * 1.7) * cos(p.y * 1.3 + time * 1.1);
-        m.normal = normalize(mi.normalEC + 0.08 * vec3(w, w * 0.5, 0.0));
-        m.diffuse = mix(shallow.rgb, deep.rgb, k); m.specular = 0.6; m.shininess = 40.0;
-        m.alpha = mix(shallow.a, deep.a, k);
-        return m;
-      }` } });
-  matA.uniforms.image = demTex;
-  const waterA = scene.primitives.add(new Cesium.Primitive({
-    geometryInstances: new Cesium.GeometryInstance({ geometry: new Cesium.RectangleGeometry({ rectangle: rect, height: 0,
-      granularity: Cesium.Math.toRadians(0.002), vertexFormat: Cesium.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat }) }),
-    appearance: new Cesium.MaterialAppearance({ material: matA, translucent: true,
-      materialSupport: Cesium.MaterialAppearance.MaterialSupport.TEXTURED }),
-    asynchronous: false
-  }));
-  const center = Cesium.Cartesian3.fromRadians(Cesium.Rectangle.center(rect).longitude, Cesium.Rectangle.center(rect).latitude, 0);
-  const up = scene.globe.ellipsoid.geodeticSurfaceNormal(center, new Cesium.Cartesian3());
+  let waterLayer = null;
+  function swapWater() {                                       // double-buffered refresh, no flicker
+    const snap = document.createElement("canvas"); snap.width = W; snap.height = H; snap.getContext("2d").drawImage(depthCv, 0, 0);
+    const old = waterLayer;
+    waterLayer = viewer.imageryLayers.addImageryProvider(new CanvasProvider(snap));
+    waterLayer.alpha = +$("wop").value;
+    if (old) setTimeout(() => viewer.imageryLayers.remove(old, true), 700);
+  }
+
+  // ======================= UI =======================
+  let mode = 1, playing = false, src = { lon: 121.42, lat: 23.665 };
+  const srcPin = viewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(src.lon, src.lat),
+    point: { pixelSize: 11, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2,
+             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Infinity },
+    label: { text: "Flood source", font: "13px sans-serif", pixelOffset: new Cesium.Cartesian2(0, -18),
+             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Infinity }
+  });
+  ["rise", "qpk", "dur", "man", "tsc", "wop"].forEach(id => { const f = () => $(id + "v").textContent = $(id).value; $(id).addEventListener("input", f); f(); });
+  $("wop").addEventListener("input", () => waterLayer && (waterLayer.alpha = +$("wop").value));
 
   function setLevel(v) {
     const lo = +$("rmin").value, hi = +$("rmax").value;
     level = Math.min(hi, Math.max(lo, v));
     $("level").min = lo; $("level").max = hi; $("level").value = level; $("lvl").textContent = level.toFixed(1);
-    matA.uniforms.level = level;
-    waterA.modelMatrix = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(up, level, new Cesium.Cartesian3()));
   }
-  function autoRange() {
-    const i = cellOf(src.lon, src.lat); if (i < 0) return;
-    const lo = Math.floor(z[i]) - 1; $("rmin").value = lo; $("rmax").value = lo + 40; buildDemTex(); setLevel(lo);
+  function showInfo(wet, dmax) {
+    const zs = z[cellOf(src.lon, src.lat)].toFixed(1);
+    $("info").innerHTML = mode === 0
+      ? `Flooded: ${(wet * CELL / 1e6).toFixed(2)} km² | max depth ${dmax.toFixed(1)} m<br>Ground at source: ${zs} m`
+      : `Sim time: <b>${Math.floor(simT / 3600)}h ${String(Math.floor(simT % 3600 / 60)).padStart(2, "0")}m</b> | inflow ${inflow(simT).toFixed(0)} m³/s<br>` +
+        `Flooded: ${(wet * CELL / 1e6).toFixed(2)} km² | max depth ${dmax.toFixed(1)} m<br>` +
+        `Volume in: ${(volIn / 1e6).toFixed(2)} million m³ | ground at source ${zs} m`;
   }
-
-  // ======================= UI =======================
-  const srcPin = viewer.entities.add({
-    position: Cesium.Cartesian3.fromDegrees(src.lon, src.lat),
-    point: { pixelSize: 10, color: Cesium.Color.RED, outlineColor: Cesium.Color.WHITE, outlineWidth: 2,
-             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Infinity },
-    label: { text: "Flood source", font: "13px sans-serif", pixelOffset: new Cesium.Cartesian2(0, -18),
-             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Infinity }
-  });
-  const bind = (id, fmt = v => v) => { const f = () => $(id + "v").textContent = fmt($(id).value); $(id).addEventListener("input", f); f(); };
-  bind("rise"); bind("qpk"); bind("dur"); bind("man"); bind("tsc");
-
+  function reset() {
+    h.fill(0); qx.fill(0); qy.fill(0); simT = 0; volIn = 0;
+    const i = cellOf(src.lon, src.lat); srcCells = [];
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) srcCells.push(i + a * W + b);
+    const lo = Math.floor(z[i]) - 1; $("rmin").value = lo; $("rmax").value = lo + 30; setLevel(lo);
+    const s = paint(); showInfo(s.wet, s.dmax);
+  }
   function applyMode() {
-    waterA.show = mode === 0; waterB.show = mode === 1;
-    $("grpA").style.display = mode === 0 ? "" : "none"; $("grpB").style.display = mode === 1 ? "" : "none";
+    $("grpA").style.display = mode === 0 ? "" : "none"; $("grpB").style.display = mode === 1 ? "" : "none"; reset();
   }
-  function reset() { resetB(); paintB(); autoRange(); info(); }
-  function info() {
-    if (mode === 0) {
-      const lo = +$("rmin").value; let n = 0; for (let i = 0; i < N; i++) if (z[i] <= level && z[i] > 0.5) n++;
-      $("info").textContent = `Flooded area: ${(n * CELL / 1e6).toFixed(2)} km² | source ground: ${z[cellOf(src.lon, src.lat)].toFixed(1)} m`;
-    }
-  }
-  document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => { mode = +r.value; applyMode(); info(); });
-  $("level").oninput = e => { setLevel(+e.target.value); info(); };
-  $("rmin").onchange = $("rmax").onchange = () => { buildDemTex(); setLevel(level); };
-  $("s2").onchange = e => s2.show = e.target.checked;
+  document.querySelectorAll("input[name=mode]").forEach(r => r.onchange = () => { mode = +r.value; applyMode(); });
+  $("level").oninput = e => { setLevel(+e.target.value); const s = paint(); showInfo(s.wet, s.dmax); };
+  $("rmin").onchange = $("rmax").onchange = () => setLevel(level);
   $("play").onclick = () => { playing = !playing; $("play").textContent = playing ? "⏸ Pause" : "▶ Play"; };
   $("reset").onclick = reset;
 
   new Cesium.ScreenSpaceEventHandler(scene.canvas).setInputAction(e => {
     const c = scene.globe.pick(viewer.camera.getPickRay(e.position), scene);
     if (!c) return;
-    const g = Cesium.Cartographic.fromCartesian(c);
-    const lon = Cesium.Math.toDegrees(g.longitude), lat = Cesium.Math.toDegrees(g.latitude);
+    const g = Cesium.Cartographic.fromCartesian(c), lon = Cesium.Math.toDegrees(g.longitude), lat = Cesium.Math.toDegrees(g.latitude);
     if (cellOf(lon, lat) < 0) return;
-    src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat);
-    reset();
+    src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat); reset();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-  // ======================= Main loop =======================
   let last = performance.now(), lastPaint = 0;
   scene.preRender.addEventListener(() => {
     const now = performance.now(), rdt = Math.min(0.1, (now - last) / 1000); last = now;
-    matA.uniforms.time = now / 1000;
     if (!playing) return;
     if (mode === 0) {
-      setLevel(level + rdt * $("rise").value); info();
+      setLevel(level + rdt * $("rise").value);
       if (level >= +$("rmax").value) $("play").click();
-      return;
+    } else {
+      let todo = rdt * $("tsc").value; const t0 = performance.now();
+      while (todo > 0 && performance.now() - t0 < 25) { const dt = Math.min(stableDt(), todo); stepB(dt); todo -= dt; }
     }
-    // Advance the model by (real dt × speed) simulated seconds, within a per-frame compute budget.
-    let todo = rdt * $("tsc").value; const t0 = performance.now();
-    while (todo > 0 && performance.now() - t0 < 25) { const dt = Math.min(stableDt(), todo); stepB(dt); todo -= dt; }
-    if (now - lastPaint > 80) {
-      lastPaint = now;
-      const { wet, dmax } = paintB(), hh = Math.floor(simT / 3600), mm = Math.floor(simT % 3600 / 60);
-      $("info").innerHTML = `Sim time: <b>${hh}h ${String(mm).padStart(2, "0")}m</b> | inflow ${inflow(simT).toFixed(0)} m³/s<br>` +
-        `Flooded: ${(wet * CELL / 1e6).toFixed(2)} km² | max depth ${dmax.toFixed(1)} m<br>` +
-        `Volume in: ${(volIn / 1e6).toFixed(2)} million m³`;
-    }
+    if (now - lastPaint > 400) { lastPaint = now; const s = paint(); showInfo(s.wet, s.dmax); }
   });
 
-  applyMode(); reset();
-  window._sim = { h, z, W, H, setSource: (lon, lat) => { src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat); reset(); } };
+  window._sim = { h, z, W, H, cellOf, setSource: (lon, lat) => { src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat); reset(); } };
+  applyMode();
   $("play").click();
 })();
 </script>
