@@ -204,7 +204,7 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
       px[p] = 120 - 115 * k; px[p + 1] = 200 - 150 * k; px[p + 2] = 235 - 115 * k; px[p + 3] = 150 + 105 * k;
     }
     dctx.putImageData(dimg, 0, 0);
-    swapWater();
+    overlayDirty = true;
     return { wet, dmax };
   }
   // Minimal ImageryProvider that serves tiles cut from a canvas snapshot.
@@ -228,19 +228,13 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
       return Promise.resolve(t);
     }
   }
-  let waterLayer = null, roadLayer = null;
+  let overlayLayer = null, overlayDirty = true;
   function swapOverlay(cv, old) {                              // double-buffered refresh, no flicker
     const snap = document.createElement("canvas"); snap.width = cv.width; snap.height = cv.height;
     snap.getContext("2d").drawImage(cv, 0, 0);
     const layer = viewer.imageryLayers.addImageryProvider(new CanvasProvider(snap));
     if (old) setTimeout(() => viewer.imageryLayers.remove(old, true), 700);
     return layer;
-  }
-  function raiseRoads() { if (roadLayer) viewer.imageryLayers.raiseToTop(roadLayer); }
-  function swapWater() {
-    waterLayer = swapOverlay(depthCv, waterLayer);
-    waterLayer.alpha = +$("wop").value;
-    raiseRoads();
   }
 
   // ======================= UI =======================
@@ -253,7 +247,7 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, disableDepthTestDistance: Infinity }
   });
   ["rise", "qpk", "dur", "man", "tsc", "wop"].forEach(id => { const f = () => $(id + "v").textContent = $(id).value; $(id).addEventListener("input", f); f(); });
-  $("wop").addEventListener("input", () => waterLayer && (waterLayer.alpha = +$("wop").value));
+  $("wop").addEventListener("input", () => { overlayDirty = true; });
 
   function setLevel(v) {
     const lo = +$("rmin").value, hi = +$("rmax").value;
@@ -292,13 +286,13 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
     secondary: 50, secondary_link: 25, tertiary: 40, tertiary_link: 20, unclassified: 40, residential: 30,
     living_street: 20, service: 20, road: 30, track: 20 };
   const ROAD_COLORS = ["#2ecc71", "#a3e635", "#facc15", "#fb923c", "#ef4444", "#7f1d1d"];
-  const RC = 2;                                                // road canvas = 2x model grid (~20 m/px)
-  const roadsCv = document.createElement("canvas");
-  roadsCv.width = W * RC; roadsCv.height = H * RC;
-  const rctx = roadsCv.getContext("2d");
+  const OV = 2;                                                // overlay canvas = 2x model grid (~20 m/px)
+  const overlayCv = document.createElement("canvas");
+  overlayCv.width = W * OV; overlayCv.height = H * OV;
+  const octx = overlayCv.getContext("2d");
   const SAMPLE_STEP = Math.min(DX, DY);
 
-  let roadsVisible = true, roadPainted = false, routeDirty = false, lastRouteAt = 0;
+  let roadsVisible = true, routeDirty = false, lastRouteAt = 0;
   let graph = null, router = null, linkList = [], roadSegs = [];
   let routeMode = false, routePts = [], routeLinks = [];
 
@@ -334,8 +328,8 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
             const link = graph.addLink(pid, id, { len, v0, samples: sampleCells(plon, plat, lon, lat),
               depth: 0, blocked: false, bucket: -1, cost: len / v0 });
             linkList.push(link);
-            roadSegs.push({ ax: lonToX(plon) * roadsCv.width, ay: latToY(plat) * roadsCv.height,
-                            bx: lonToX(lon) * roadsCv.width, by: latToY(lat) * roadsCv.height, link });
+            roadSegs.push({ ax: lonToX(plon) * overlayCv.width, ay: latToY(plat) * overlayCv.height,
+                            bx: lonToX(lon) * overlayCv.width, by: latToY(lat) * overlayCv.height, link });
           }
         }
         pid = id; plon = lon; plat = lat;
@@ -364,26 +358,35 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
       link.data.blocked = blocked;
       link.data.cost = link.data.len / (link.data.v0 * (1 - 0.8 * Math.min(1, d / blk)));   // deep = slow, then blocked
     }
+    if (changed) overlayDirty = true;
     return changed;
   }
 
-  function paintRoads() {
-    rctx.clearRect(0, 0, roadsCv.width, roadsCv.height);
+  // Water and roads share one canvas so that a single imagery layer is swapped per repaint.
+  // Two independently-refreshed canvas layers starve Cesium's tile pipeline, and the whole
+  // overlay (flood included) never settles.
+  function paintOverlay() {
+    octx.clearRect(0, 0, overlayCv.width, overlayCv.height);
+    octx.imageSmoothingEnabled = true;
+    octx.globalAlpha = +$("wop").value;                        // water opacity, baked in as before
+    octx.drawImage(depthCv, 0, 0, overlayCv.width, overlayCv.height);
+    octx.globalAlpha = 1;
+    if (!roadsVisible || !roadSegs.length) return;
     const paths = ROAD_COLORS.map(() => new Path2D());
     for (const s of roadSegs) {
       const b = s.link.data.bucket;
       const p = paths[b < 0 ? 0 : b];
       p.moveTo(s.ax, s.ay); p.lineTo(s.bx, s.by);
     }
-    rctx.lineWidth = 2.5; rctx.lineCap = "round";
-    for (let b = 0; b < paths.length; b++) { rctx.strokeStyle = ROAD_COLORS[b]; rctx.stroke(paths[b]); }
-    roadPainted = true;
+    octx.lineWidth = 1.4; octx.lineCap = "round";              // thin enough not to paint over the flood
+    for (let b = 0; b < paths.length; b++) { octx.strokeStyle = ROAD_COLORS[b]; octx.stroke(paths[b]); }
   }
 
-  function swapRoads() {
-    roadLayer = swapOverlay(roadsCv, roadLayer);
-    roadLayer.show = roadsVisible;
-    raiseRoads();
+  function renderOverlay() {
+    if (!overlayDirty) return;
+    overlayDirty = false;
+    paintOverlay();
+    overlayLayer = swapOverlay(overlayCv, overlayLayer);
   }
 
   const pinOf = (color, text) => viewer.entities.add({
@@ -454,21 +457,7 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
       `<br><small>Recalculated as the flood moves.</small>`;
   }
 
-  function updateRoads() {
-    if (!graph) return;
-    const changed = refreshRoads();
-    if (roadsVisible && (changed || !roadPainted)) { paintRoads(); swapRoads(); }
-    if (routePts.length > 1) {
-      const cut = routeLinks.some(l => l.data.blocked);
-      if (routeDirty || cut || (changed && performance.now() - lastRouteAt > 2000)) computeRoute();
-    }
-  }
-
-  $("roads").onchange = e => {
-    roadsVisible = e.target.checked;
-    if (roadLayer) roadLayer.show = roadsVisible;
-    if (roadsVisible) roadPainted = false;
-  };
+  $("roads").onchange = e => { roadsVisible = e.target.checked; overlayDirty = true; };
   $("blk").oninput = e => { $("blkv").textContent = (+e.target.value).toFixed(2); routeDirty = true; };
   $("blkv").textContent = (+$("blk").value).toFixed(2);
   $("routeBtn").onclick = () => {
@@ -513,19 +502,28 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
   let last = performance.now(), lastPaint = 0, lastRoadTick = 0;
   scene.preRender.addEventListener(() => {
     const now = performance.now(), rdt = Math.min(0.1, (now - last) / 1000); last = now;
-    if (now - lastRoadTick > 400) { lastRoadTick = now; updateRoads(); }   // keeps running while paused
-    if (!playing) return;
-    if (mode === 0) {
-      setLevel(level + rdt * $("rise").value);
-      if (level >= +$("rmax").value) $("play").click();
-    } else {
-      let todo = rdt * $("tsc").value; const t0 = performance.now();
-      while (todo > 0 && performance.now() - t0 < 25) { const dt = Math.min(stableDt(), todo); stepB(dt); todo -= dt; }
+    if (playing) {
+      if (mode === 0) {
+        setLevel(level + rdt * $("rise").value);
+        if (level >= +$("rmax").value) $("play").click();
+      } else {
+        let todo = rdt * $("tsc").value; const t0 = performance.now();
+        while (todo > 0 && performance.now() - t0 < 25) { const dt = Math.min(stableDt(), todo); stepB(dt); todo -= dt; }
+      }
+      if (now - lastPaint > 400) { lastPaint = now; const s = paint(); showInfo(s.wet, s.dmax); }
     }
-    if (now - lastPaint > 400) { lastPaint = now; const s = paint(); showInfo(s.wet, s.dmax); }
+    if (now - lastRoadTick > 400) {                            // reclassify roads / re-route, even while paused
+      lastRoadTick = now;
+      const changed = graph ? refreshRoads() : 0;
+      if (routePts.length > 1) {
+        const cut = routeLinks.some(l => l.data.blocked);
+        if (routeDirty || cut || (changed && now - lastRouteAt > 2000)) computeRoute();
+      }
+    }
+    renderOverlay();
   });
 
-  window._sim = { h, z, W, H, cellOf, depthAt, refreshRoads, paintRoads,
+  window._sim = { h, z, W, H, cellOf, depthAt, refreshRoads, paintOverlay, renderOverlay, computeRoute,
     roads: () => ({ graph, router, linkList, roadSegs, routePts, routeLinks }),
     setRoute: (a, b) => { routePts = [a, b]; computeRoute(); },
     setSource: (lon, lat) => { src = { lon, lat }; srcPin.position = Cesium.Cartesian3.fromDegrees(lon, lat); reset(); } };
