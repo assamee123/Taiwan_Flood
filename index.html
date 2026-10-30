@@ -221,7 +221,7 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
       const r = this.tilingScheme.tileXYToRectangle(x, y, l), t = document.createElement("canvas");
       t.width = t.height = 256;
       const cw = this.cv.width, ch = this.cv.height;
-      const sx = lonToX(r.west) * cw, sy = latToY(r.north) * ch;
+      const sx = (r.west - rect.west) / (rect.east - rect.west) * cw, sy = (rect.north - r.north) / (rect.north - rect.south) * ch;
       const sw = r.width / (rect.east - rect.west) * cw, sh = r.height / (rect.north - rect.south) * ch;
       const c = t.getContext("2d"); c.imageSmoothingEnabled = l < 13;
       c.drawImage(this.cv, sx, sy, sw, sh, 0, 0, 256, 256);
@@ -375,7 +375,7 @@ window.addEventListener("unhandledrejection", e => showErr("Async error: " + (e.
       const p = paths[b < 0 ? 0 : b];
       p.moveTo(s.ax, s.ay); p.lineTo(s.bx, s.by);
     }
-    rctx.lineWidth = 1.5; rctx.lineCap = "round";
+    rctx.lineWidth = 2.5; rctx.lineCap = "round";
     for (let b = 0; b < paths.length; b++) { rctx.strokeStyle = ROAD_COLORS[b]; rctx.stroke(paths[b]); }
     roadPainted = true;
   }
